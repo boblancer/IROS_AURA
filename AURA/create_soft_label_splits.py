@@ -1,9 +1,10 @@
 """
-Create train/val/test CSVs for AURA anomaly detection from the provided labels.
+Create the paper train/test split CSVs for AURA anomaly detection.
 
-Train uses only normal frames from normal_frames.csv. Val and test use soft labels
-from the dataset's held-out test videos so thresholds can be tuned without
-touching final test videos.
+Training frames are normal-only frames from each scene's normal_frames.csv,
+filtered to the video IDs reported for paper Split 1 and Split 2. Test frames
+come from each scene's test_frames.csv videos with soft labels converted to a
+binary label using the configured threshold.
 
 Usage:
     python create_soft_label_splits.py
@@ -17,9 +18,22 @@ from pathlib import Path
 import pandas as pd
 
 
-DEFAULT_VAL_VIDEOS = {
-    "scene_A": ["v07"],
-    "scene_B": ["v22"],
+SCENES = ("scene_A", "scene_B")
+
+PAPER_SPLITS = {
+    "split_1": {
+        "scene_A": ("v02", "v03", "v06", "v09"),
+        "scene_B": ("v10", "v12", "v13", "v18", "v20"),
+    },
+    "split_2": {
+        "scene_A": ("v01", "v02", "v03", "v05", "v06", "v08", "v09"),
+        "scene_B": ("v10", "v12", "v13", "v14", "v15", "v18", "v20", "v21", "v23", "v24"),
+    },
+}
+
+EXPECTED_TRAIN_COUNTS = {
+    "split_1": {"scene_A": 3387, "scene_B": 508},
+    "split_2": {"scene_A": 6516, "scene_B": 844},
 }
 
 
@@ -39,8 +53,61 @@ def add_binary_label(df, threshold):
     return df
 
 
+def build_train(root, split_name):
+    parts = []
+    for scene in SCENES:
+        videos = PAPER_SPLITS[split_name][scene]
+        frames = pd.read_csv(root / scene / "normal_frames.csv")
+        train = frames[frames["video"].isin(videos)].copy()
+        train.insert(0, "scene", scene)
+        train["soft_label"] = 0.0
+        train["label"] = "normal"
+
+        expected_count = EXPECTED_TRAIN_COUNTS[split_name][scene]
+        if len(train) != expected_count:
+            found_videos = ", ".join(sorted(train["video"].unique()))
+            raise ValueError(
+                f"{split_name}/{scene} expected {expected_count} training frames, "
+                f"got {len(train)} from videos: {found_videos}"
+            )
+
+        parts.append(train[["scene", "video", "frame_idx", "soft_label", "label"]])
+
+    return pd.concat(parts, ignore_index=True)
+
+
+def build_test(root, threshold):
+    soft = pd.read_csv(root / "annotations" / "soft_labels.csv")
+    parts = []
+
+    for scene in SCENES:
+        test_videos = pd.read_csv(root / scene / "test_frames.csv")["video"].unique()
+        scene_soft = soft[(soft["scene"] == scene) & (soft["video"].isin(test_videos))]
+        parts.append(add_binary_label(scene_soft, threshold))
+
+    return pd.concat(parts, ignore_index=True)[["scene", "video", "frame_idx", "soft_label", "label"]]
+
+
+def write_split(output, split_name, train, test):
+    split_dir = output / split_name
+    split_dir.mkdir(parents=True, exist_ok=True)
+    train.to_csv(split_dir / "train.csv", index=False)
+    test.to_csv(split_dir / "test.csv", index=False)
+
+
+def print_summary(split_name, train, test):
+    print(f"{split_name}:")
+    print(f"  train: {len(train)} rows")
+    print(train.groupby(["scene", "label"]).size().to_string())
+    print("  train videos:")
+    print(train.groupby("scene")["video"].unique().to_string())
+    print(f"  test: {len(test)} rows")
+    print(test.groupby(["scene", "label"]).size().to_string())
+    print()
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Create AURA train/val/test splits from soft labels")
+    parser = argparse.ArgumentParser(description="Create paper AURA train/test splits from soft labels")
     parser.add_argument("--threshold", type=float, default=0.5, help="Soft label threshold for binary labels")
     parser.add_argument("--output", default="splits", help="Output directory under AURA")
     args = parser.parse_args()
@@ -49,42 +116,14 @@ def main():
     output = root / args.output
     output.mkdir(parents=True, exist_ok=True)
 
-    soft = pd.read_csv(root / "annotations" / "soft_labels.csv")
-    train_parts = []
-    val_parts = []
-    test_parts = []
+    test = build_test(root, args.threshold)
 
-    for scene in ["scene_A", "scene_B"]:
-        train = pd.read_csv(root / scene / "normal_frames.csv")
-        train.insert(0, "scene", scene)
-        train["soft_label"] = 0.0
-        train["label"] = "normal"
-        train_parts.append(train[["scene", "video", "frame_idx", "soft_label", "label"]])
+    for split_name in PAPER_SPLITS:
+        train = build_train(root, split_name)
+        write_split(output, split_name, train, test)
+        print_summary(split_name, train, test)
 
-        test_frame_videos = pd.read_csv(root / scene / "test_frames.csv")["video"].unique()
-        scene_soft = add_binary_label(
-            soft[(soft["scene"] == scene) & (soft["video"].isin(test_frame_videos))],
-            args.threshold,
-        )
-        val_videos = DEFAULT_VAL_VIDEOS[scene]
-        val_parts.append(scene_soft[scene_soft["video"].isin(val_videos)])
-        test_parts.append(scene_soft[~scene_soft["video"].isin(val_videos)])
-
-    splits = {
-        "train": pd.concat(train_parts, ignore_index=True),
-        "val": pd.concat(val_parts, ignore_index=True),
-        "test": pd.concat(test_parts, ignore_index=True),
-    }
-
-    for name, df in splits.items():
-        path = output / f"{name}.csv"
-        df.to_csv(path, index=False)
-        print(f"{name}: {len(df)} rows -> {path}")
-        print(df.groupby(["scene", "label"]).size().to_string())
-        print()
-
-    print("Validation videos: scene_A/v07, scene_B/v22")
-    print("The remaining held-out soft-labeled videos are in test. Train is normal-only.")
+    print("Generated paper split artifacts only: split_1/train.csv, split_1/test.csv, split_2/train.csv, split_2/test.csv")
 
 
 if __name__ == "__main__":
