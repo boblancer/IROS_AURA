@@ -1,0 +1,2 @@
+AURA/scene_B/videos/*.mp4 filter=lfs diff=lfs merge=lfs -text
+AURA/scene_A/videos/*.mp4 filter=lfs diff=lfs merge=lfs -text
