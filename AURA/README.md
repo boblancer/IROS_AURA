@@ -132,7 +132,7 @@ datamodule = Folder(
 
 **Split 2**: Larger paper training set used for the Reverse Distillation reference numbers.
 
-**Final Evaluation**: Run inference on every row in the split's `test.csv`, then evaluate the per-frame anomaly scores against soft labels and consensus events.
+**Final Evaluation**: Run inference on every row in `annotations/soft_labels.csv`, then evaluate the per-frame anomaly scores against soft labels and consensus events. Use `--eval-scope split_test` only for the smaller held-out debug set in `splits/<split>/test.csv`.
 
 ### Evaluate Scores
 
@@ -146,10 +146,13 @@ scene_A,v00,1,0.128
 
 Required columns are `scene`, `video`, `frame_idx`, and a score column. The score column is detected automatically if it is named `score`, `anomaly_score`, `pred_score`, or `image_score`.
 
-Evaluate Split 2 scores:
+Evaluate Split 2 scores with paper-style all-labeled evaluation:
 
 ```bash
-python evaluate_scores.py --scores rd_split2_scores.csv --split split_2
+python evaluate_scores.py \
+  --scores rd_split2_scores.csv \
+  --split split_2 \
+  --out-dir results/rd_split2
 ```
 
 Use a custom score column:
@@ -167,11 +170,19 @@ Write normalized per-frame scores and peak-finding event predictions:
 python evaluate_scores.py \
   --scores rd_split2_scores.csv \
   --split split_2 \
-  --normalized-output rd_split2_normalized.csv \
-  --events-output rd_split2_events.csv
+  --out-dir results/rd_split2
 ```
 
-The evaluator normalizes scores to `[0, 1]` per video, reports MAE against `soft_label`, sweeps peak relative height from `0.00` to `1.00`, and reports temporal IoU against `consensus_events.csv`.
+The evaluator normalizes scores to `[0, 1]` per video, reports MAE against `soft_label` as a macro average over videos, sweeps threshold and peak relative height from `0.00` to `1.00`, and reports temporal IoU against `consensus_events.csv`. When `--out-dir` is set, it writes `normalized_scores.csv`, `per_video_mae.csv`, `parameter_sweep.csv`, `event_predictions.csv`, and `summary.json`.
+
+For the fastest local debug check on the held-out split CSVs:
+
+```bash
+python evaluate_scores.py \
+  --scores rd_split2_scores.csv \
+  --split split_2 \
+  --eval-scope split_test
+```
 
 **Important**: Some frames appear in both training and evaluation sets. This is intentional: models must detect when anomalies occur within learned scenes.
 
